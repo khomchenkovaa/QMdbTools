@@ -5,6 +5,27 @@
 #include <QtSql>
 #include <QDebug>
 
+QString typeName(int mdbType) {
+    switch (mdbType) {
+    case MDB_BOOL:     return "BOOL";
+    case MDB_BYTE:     return "BYTE";
+    case MDB_INT:      return "INT";
+    case MDB_LONGINT:  return "LONGINT";
+    case MDB_MONEY:    return "MONEY";
+    case MDB_FLOAT:    return "FLOAT";
+    case MDB_DOUBLE:   return "DOUBLE";
+    case MDB_DATETIME: return "DATETIME";
+    case MDB_BINARY:   return "BINARY";
+    case MDB_TEXT:     return "TEXT";
+    case MDB_OLE:      return "OLE";
+    case MDB_MEMO:     return "MEMO";
+    case MDB_REPID:    return "REPID";
+    case MDB_NUMERIC:  return "NUMERIC";
+    case MDB_COMPLEX:  return "COMPLEX";
+    }
+    return "Unknown";
+}
+
 QStringList objects(MdbHandle *mdb, QSql::TableType type) {
     QStringList res;
     if (!mdb) {
@@ -16,18 +37,32 @@ QStringList objects(MdbHandle *mdb, QSql::TableType type) {
         MdbCatalogEntry *entry = static_cast<MdbCatalogEntry *>(g_ptr_array_index (mdb->catalog, i));
 
         if ((type & QSql::Tables) && mdb_is_user_table(entry)) {
-            res << QString::fromLocal8Bit(entry->object_name);
+            res << QString::fromUtf8(entry->object_name);
         }
 
         if ((type & QSql::SystemTables) && mdb_is_system_table(entry)) {
-            res << QString::fromLocal8Bit(entry->object_name);
+            res << QString::fromUtf8(entry->object_name);
         }
 
         if ((type & QSql::Views) && (entry->object_type == MDB_QUERY)) {
-            res << QString::fromLocal8Bit(entry->object_name);
+            res << QString::fromUtf8(entry->object_name);
         }
     }
     return res;
+}
+
+MdbTableDef *tableDef(MdbHandle *mdb, const QString &tableName) {
+    auto table = mdb_read_table_by_name(mdb, const_cast<char *>(qUtf8Printable(tableName)), MDB_TABLE);
+    if (!table) {
+        qDebug() << QString("Error: Table %1 does not exist in this database.").arg(tableName);
+        return table;
+    }
+
+    /* read table */
+    mdb_read_columns(table);
+    mdb_rewind_table(table);
+
+    return table;
 }
 
 int main(int argc, char *argv[])
@@ -58,11 +93,22 @@ int main(int argc, char *argv[])
         return 3;
     }
 
-    auto tables    = objects(access->mdb, QSql::Tables);
-    auto sysTables = objects(access->mdb, QSql::SystemTables);
-    auto views     = objects(access->mdb, QSql::Views);
+    const auto tables    = objects(access->mdb, QSql::Tables);
+    const auto sysTables = objects(access->mdb, QSql::SystemTables);
+    const auto views     = objects(access->mdb, QSql::Views);
 
-    qDebug() << "tables"    << Qt::endl << tables    << Qt::endl;
+    for (const auto &tbl : tables) {
+        auto table = tableDef(handle, tbl);
+        if (table) {
+            qDebug() << "table" << tbl << "has" << table->num_cols << "columns:";
+            for (uint i = 0; i < table->num_cols; i++) {
+                 MdbColumn *col = static_cast<MdbColumn *>(g_ptr_array_index(table->columns, i));
+                 qDebug() << col->name << QString("%1 (%2)").arg(typeName(col->col_type)).arg(col->col_size);
+            }
+            mdb_free_tabledef(table);
+        }
+    }
+
     qDebug() << "sysTables" << Qt::endl << sysTables << Qt::endl;
     qDebug() << "views"     << Qt::endl << views     << Qt::endl;
 
