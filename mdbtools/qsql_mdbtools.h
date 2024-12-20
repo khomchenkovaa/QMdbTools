@@ -35,7 +35,7 @@ public:
     QSqlResult *createResult() const override;
     QStringList tables(QSql::TableType) const override;
 
-//    QSqlRecord record(const QString& tablename) const override;
+    QSqlRecord record(const QString& tablename) const override;
 //    QSqlIndex primaryIndex(const QString &table) const override;
 };
 

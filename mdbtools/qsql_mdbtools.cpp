@@ -1,8 +1,10 @@
 #include "qsql_mdbtools.h"
 
+#include <QCoreApplication>
 #include <QSqlError>
 #include <QSqlResult>
 #include <QSqlRecord>
+#include <QSqlField>
 #include <QtSql/private/qsqldriver_p.h>
 
 #include <QDebug>
@@ -24,6 +26,29 @@ Q_DECLARE_METATYPE(MdbSQL*)
 QT_BEGIN_NAMESPACE
 
 /************************************************************/
+
+static QString qTypeName(int mdbType) {
+    switch (mdbType) {
+    case MDB_BOOL:     return QLatin1String("bool");
+    case MDB_BYTE:     return QLatin1String("byte");
+    case MDB_INT:      return QLatin1String("int");
+    case MDB_LONGINT:  return QLatin1String("longint");
+    case MDB_MONEY:    return QLatin1String("money");
+    case MDB_FLOAT:    return QLatin1String("float");
+    case MDB_DOUBLE:   return QLatin1String("double");
+    case MDB_DATETIME: return QLatin1String("datetime");
+    case MDB_BINARY:   return QLatin1String("binary");
+    case MDB_TEXT:     return QLatin1String("text");
+    case MDB_OLE:      return QLatin1String("ole");
+    case MDB_MEMO:     return QLatin1String("memo");
+    case MDB_REPID:    return QLatin1String("repid");
+    case MDB_NUMERIC:  return QLatin1String("numeric");
+    case MDB_COMPLEX:  return QLatin1String("complex");
+    }
+    return QLatin1String("unknown");
+}
+
+/************************************************************/
 /*
 static QString _q_escapeIdentifier(const QString &identifier)
 {
@@ -37,27 +62,33 @@ static QString _q_escapeIdentifier(const QString &identifier)
 }
 */
 /************************************************************/
-/*
+
 static QVariant::Type qGetColumnType(const QString &tpName)
 {
     const QString typeName = tpName.toLower();
 
-    if (typeName == QLatin1String("integer")
-        || typeName == QLatin1String("int"))
-        return QVariant::Int;
-    if (typeName == QLatin1String("double")
-        || typeName == QLatin1String("float")
-        || typeName == QLatin1String("real")
-        || typeName.startsWith(QLatin1String("numeric")))
-        return QVariant::Double;
-    if (typeName == QLatin1String("blob"))
-        return QVariant::ByteArray;
-    if (typeName == QLatin1String("boolean")
-        || typeName == QLatin1String("bool"))
+    if (typeName == QLatin1String("bool"))
         return QVariant::Bool;
+    if (typeName == QLatin1String("byte"))
+        return QVariant::Char;
+    if (typeName == QLatin1String("int"))
+        return QVariant::Int;
+    if (typeName == QLatin1String("longint")
+        || typeName == QLatin1String("repid"))
+        return QVariant::LongLong;
+    if (typeName == QLatin1String("money")
+        || typeName == QLatin1String("float")
+        || typeName == QLatin1String("double")
+        || typeName == QLatin1String("numeric"))
+        return QVariant::Double;
+    if (typeName == QLatin1String("datetime"))
+        return QVariant::DateTime;
+    if (typeName == QLatin1String("binary")
+        || typeName == QLatin1String("ole"))
+        return QVariant::ByteArray;
     return QVariant::String;
 }
-*/
+
 /************************************************************/
 
 static QSqlError qMakeError(MdbSQL *access, const QString &descr,
@@ -147,9 +178,9 @@ bool QMdbToolsResult::isNull(int index)
 
 bool QMdbToolsResult::reset(const QString &query)
 {
-    if (!prepare(query))
+//    if (!prepare(query))
         return false;
-    return exec();
+//    return exec();
 }
 
 /************************************************************/
@@ -366,6 +397,48 @@ static QSqlIndex qGetTableInfo(QSqlQuery &q, const QString &tableName, bool only
 }
 */
 /************************************************************/
+
+QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
+{
+    auto mdb = d_func()->access->mdb;
+
+    if (!isOpen())
+        return QSqlRecord();
+
+    QString tableName = tbl;
+    if (isIdentifierEscaped(tableName, QSqlDriver::TableName))
+        tableName = stripDelimiters(tableName, QSqlDriver::TableName);
+
+
+
+    auto table = mdb_read_table_by_name(mdb, const_cast<char *>(qUtf8Printable(tableName)), MDB_TABLE);
+    if (!table) {
+        qDebug() << QString::fromLocal8Bit("Error: Table %1 does not exist in this database.").arg(tableName);
+        return QSqlRecord();
+    }
+
+    /* read table */
+    mdb_read_columns(table);
+    mdb_rewind_table(table);
+
+    QSqlRecord res;
+    for (uint i = 0; i < table->num_cols; i++) {
+         MdbColumn *col = static_cast<MdbColumn *>(g_ptr_array_index(table->columns, i));
+         QString colName  = QString::fromUtf8(col->name);
+         QString typeName = qTypeName(col->col_type);
+         QSqlField fld(colName, qGetColumnType(typeName), tableName);
+         fld.setLength(col->col_size);
+         fld.setPrecision(col->col_prec);
+         fld.setReadOnly(col->is_fixed);
+         fld.setAutoValue(col->is_long_auto);
+         res.append(fld);
+    }
+    mdb_free_tabledef(table);
+
+    return res;
+}
+
+/************************************************************/
 /*
 QSqlIndex QMdbToolsDriver::primaryIndex(const QString &tblname) const
 {
@@ -379,22 +452,6 @@ QSqlIndex QMdbToolsDriver::primaryIndex(const QString &tblname) const
     QSqlQuery q(createResult());
     q.setForwardOnly(true);
     return qGetTableInfo(q, table, true);
-}
-*/
-/************************************************************/
-/*
-QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
-{
-    if (!isOpen())
-        return QSqlRecord();
-
-    QString table = tbl;
-    if (isIdentifierEscaped(table, QSqlDriver::TableName))
-        table = stripDelimiters(table, QSqlDriver::TableName);
-
-    QSqlQuery q(createResult());
-    q.setForwardOnly(true);
-    return qGetTableInfo(q, table);
 }
 */
 /************************************************************/
