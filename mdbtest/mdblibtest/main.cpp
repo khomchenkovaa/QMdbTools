@@ -65,6 +65,35 @@ MdbTableDef *tableDef(MdbHandle *mdb, const QString &tableName) {
     return table;
 }
 
+bool runQuery(MdbSQL *sql, const QString &query) {
+    mdb_sql_run_query(sql, const_cast<char *>(qUtf8Printable(query)));
+
+    if (mdb_sql_has_error(sql)) {
+        qDebug() << "Error:" << sql->error_msg;
+        mdb_sql_reset(sql);
+        return false;
+    }
+
+    QStringList columns;
+    for (uint j=0; j<sql->num_columns; j++) {
+        MdbSQLColumn *sqlcol = static_cast<MdbSQLColumn *>(g_ptr_array_index(sql->columns, j));
+        columns << sqlcol->name;
+    }
+    qDebug() << "Query:" << query;
+    qDebug() << columns;
+    while(mdb_fetch_row(sql->cur_table)) {
+        QStringList values;
+        for (uint j=0; j<sql->num_columns; j++) {
+            auto val = sql->bound_values[j];
+            values << static_cast<char *>(val);
+        }
+        qDebug() << values;
+    }
+
+    mdb_sql_reset(sql);
+    return true;
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication a(argc, argv);
@@ -111,6 +140,10 @@ int main(int argc, char *argv[])
 
     qDebug() << "sysTables" << Qt::endl << sysTables << Qt::endl;
     qDebug() << "views"     << Qt::endl << views     << Qt::endl;
+
+    runQuery(access, "select * from Authors");
+    runQuery(access, "select * from Hooks");
+    runQuery(access, "select * from Books");
 
     mdb_sql_close(access);
     if (mdb_sql_has_error(access)) {

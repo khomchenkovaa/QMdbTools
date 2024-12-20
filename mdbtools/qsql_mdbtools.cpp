@@ -130,6 +130,12 @@ class QMdbToolsResult : public QSqlResult
 {
     friend class QSQLiteDriver;
 
+    struct QMdbToolsResultData {
+        int curIdx = -1;
+        QList<QVariantList> data;
+        const QMdbToolsDriver* db = Q_NULLPTR;
+    };
+
 public:
     explicit QMdbToolsResult(const QMdbToolsDriver* db);
     ~QMdbToolsResult();
@@ -144,6 +150,9 @@ protected:
     int size() override;
     int numRowsAffected() override;
     QSqlRecord record() const override;
+
+private:
+    QMdbToolsResultData d;
 };
 
 /************************************************************/
@@ -172,7 +181,7 @@ public:
 QMdbToolsResult::QMdbToolsResult(const QMdbToolsDriver *db)
     : QSqlResult(db)
 {
-
+    d.db = db;
 }
 
 /************************************************************/
@@ -186,7 +195,12 @@ QMdbToolsResult::~QMdbToolsResult()
 
 QVariant QMdbToolsResult::data(int index)
 {
-    Q_UNUSED(index)
+    if (d.curIdx == -1 && d.curIdx >= d.data.size())
+        return QVariant();
+    auto rec = d.data.at(d.curIdx);
+    if (index >= 0 && index < rec.size()) {
+        return rec.at(index);
+    }
     return QVariant();
 }
 
@@ -194,18 +208,27 @@ QVariant QMdbToolsResult::data(int index)
 
 bool QMdbToolsResult::isNull(int index)
 {
-    Q_UNUSED(index)
-    return false;
+    auto val = data(index);
+    return !val.isValid();
 }
 
 /************************************************************/
 
 bool QMdbToolsResult::reset(const QString &query)
 {
-    Q_UNUSED(query)
-//    if (!prepare(query))
+    auto sql = d.db->d_func()->access;
+    mdb_sql_run_query(sql, const_cast<char *>(qUtf8Printable(query)));
+
+    if (mdb_sql_has_error(sql)) {
+        setLastError(qMakeError(sql, QString::fromUtf8("Cannot run query"), QSqlError::StatementError, -11));
+        mdb_sql_reset(sql);
         return false;
-//    return exec();
+    }
+
+    // TODO
+
+    mdb_sql_reset(sql);
+    return true;
 }
 
 /************************************************************/
