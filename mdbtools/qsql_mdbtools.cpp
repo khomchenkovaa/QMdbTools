@@ -26,7 +26,7 @@ Q_DECLARE_METATYPE(MdbSQL*)
 QT_BEGIN_NAMESPACE
 
 /************************************************************/
-
+/*
 static QString qTypeName(int mdbType) {
     switch (mdbType) {
     case MDB_BOOL:     return QLatin1String("bool");
@@ -47,7 +47,7 @@ static QString qTypeName(int mdbType) {
     }
     return QLatin1String("unknown");
 }
-
+*/
 /************************************************************/
 /*
 static QString _q_escapeIdentifier(const QString &identifier)
@@ -63,6 +63,30 @@ static QString _q_escapeIdentifier(const QString &identifier)
 */
 /************************************************************/
 
+static QVariant::Type qGetColumnType(int mdbType)
+{
+    switch (mdbType) {
+    case MDB_BOOL:     return QVariant::Bool;
+    case MDB_BYTE:     return QVariant::Char;
+    case MDB_INT:      return QVariant::Int;
+    case MDB_LONGINT:  return QVariant::LongLong;
+    case MDB_MONEY:    return QVariant::Double;
+    case MDB_FLOAT:    return QVariant::Double;
+    case MDB_DOUBLE:   return QVariant::Double;
+    case MDB_DATETIME: return QVariant::DateTime;
+    case MDB_BINARY:   return QVariant::ByteArray;
+    case MDB_TEXT:     return QVariant::String;
+    case MDB_OLE:      return QVariant::ByteArray;
+    case MDB_MEMO:     return QVariant::String;
+    case MDB_REPID:    return QVariant::LongLong;
+    case MDB_NUMERIC:  return QVariant::Double;
+    case MDB_COMPLEX:  return QVariant::String;
+    }
+    return QVariant::String;
+}
+
+/************************************************************/
+/*
 static QVariant::Type qGetColumnType(const QString &tpName)
 {
     const QString typeName = tpName.toLower();
@@ -88,7 +112,7 @@ static QVariant::Type qGetColumnType(const QString &tpName)
         return QVariant::ByteArray;
     return QVariant::String;
 }
-
+*/
 /************************************************************/
 
 static QSqlError qMakeError(MdbSQL *access, const QString &descr,
@@ -178,6 +202,7 @@ bool QMdbToolsResult::isNull(int index)
 
 bool QMdbToolsResult::reset(const QString &query)
 {
+    Q_UNUSED(query)
 //    if (!prepare(query))
         return false;
 //    return exec();
@@ -425,8 +450,8 @@ QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
     for (uint i = 0; i < table->num_cols; i++) {
          MdbColumn *col = static_cast<MdbColumn *>(g_ptr_array_index(table->columns, i));
          QString colName  = QString::fromUtf8(col->name);
-         QString typeName = qTypeName(col->col_type);
-         QSqlField fld(colName, qGetColumnType(typeName), tableName);
+         QSqlField fld(colName, qGetColumnType(col->col_type), tableName);
+         fld.setSqlType(col->col_type);
          fld.setLength(col->col_size);
          fld.setPrecision(col->col_prec);
          fld.setReadOnly(col->is_fixed);
