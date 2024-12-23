@@ -18,7 +18,7 @@ class Q_EXPORT_SQLDRIVER_MDBTOOLS QMdbToolsDriver : public QSqlDriver
 {
     Q_DECLARE_PRIVATE(QMdbToolsDriver)
     Q_OBJECT
-    friend class QMdbToolsResult;
+    friend class QMdbToolsResultPrivate;
 
 public:
     explicit QMdbToolsDriver(QObject *parent = nullptr);

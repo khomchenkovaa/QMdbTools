@@ -6,6 +6,7 @@
 #include <QSqlRecord>
 #include <QSqlField>
 #include <QtSql/private/qsqldriver_p.h>
+#include <QtSql/private/qsqlresult_p.h>
 
 #include <QDebug>
 
@@ -25,29 +26,6 @@ Q_DECLARE_METATYPE(MdbSQL*)
 
 QT_BEGIN_NAMESPACE
 
-/************************************************************/
-/*
-static QString qTypeName(int mdbType) {
-    switch (mdbType) {
-    case MDB_BOOL:     return QLatin1String("bool");
-    case MDB_BYTE:     return QLatin1String("byte");
-    case MDB_INT:      return QLatin1String("int");
-    case MDB_LONGINT:  return QLatin1String("longint");
-    case MDB_MONEY:    return QLatin1String("money");
-    case MDB_FLOAT:    return QLatin1String("float");
-    case MDB_DOUBLE:   return QLatin1String("double");
-    case MDB_DATETIME: return QLatin1String("datetime");
-    case MDB_BINARY:   return QLatin1String("binary");
-    case MDB_TEXT:     return QLatin1String("text");
-    case MDB_OLE:      return QLatin1String("ole");
-    case MDB_MEMO:     return QLatin1String("memo");
-    case MDB_REPID:    return QLatin1String("repid");
-    case MDB_NUMERIC:  return QLatin1String("numeric");
-    case MDB_COMPLEX:  return QLatin1String("complex");
-    }
-    return QLatin1String("unknown");
-}
-*/
 /************************************************************/
 /*
 static QString _q_escapeIdentifier(const QString &identifier)
@@ -126,37 +104,6 @@ static QSqlError qMakeError(MdbSQL *access, const QString &descr,
 
 /************************************************************/
 
-class QMdbToolsResult : public QSqlResult
-{
-    friend class QSQLiteDriver;
-
-    struct QMdbToolsResultData {
-        int curIdx = -1;
-        QList<QVariantList> data;
-        const QMdbToolsDriver* db = Q_NULLPTR;
-    };
-
-public:
-    explicit QMdbToolsResult(const QMdbToolsDriver* db);
-    ~QMdbToolsResult();
-
-protected:
-    QVariant data(int index) override;
-    bool isNull(int index) override;
-    bool reset(const QString &query) override;
-    bool fetch(int index) override;
-    bool fetchFirst() override;
-    bool fetchLast() override;
-    int size() override;
-    int numRowsAffected() override;
-    QSqlRecord record() const override;
-
-private:
-    QMdbToolsResultData d;
-};
-
-/************************************************************/
-
 class QMdbToolsDriverPrivate : public QSqlDriverPrivate
 {
     Q_DECLARE_PUBLIC(QMdbToolsDriver)
@@ -178,10 +125,79 @@ public:
 
 /************************************************************/
 
-QMdbToolsResult::QMdbToolsResult(const QMdbToolsDriver *db)
-    : QSqlResult(db)
+class QMdbToolsResultPrivate;
+
+class QMdbToolsResult : public QSqlResult
 {
-    d.db = db;
+    Q_DECLARE_PRIVATE(QMdbToolsResult)
+    friend class QSQLiteDriver;
+
+public:
+    explicit QMdbToolsResult(const QMdbToolsDriver* db);
+    ~QMdbToolsResult();
+
+protected:
+    QVariant data(int index) override;
+    bool isNull(int index) override;
+    bool reset(const QString &query) override;
+    bool fetch(int index) override;
+    bool fetchFirst() override;
+    bool fetchLast() override;
+    int size() override;
+    int numRowsAffected() override;
+    QSqlRecord record() const override;
+};
+
+/************************************************************/
+
+class QMdbToolsResultPrivate: public QSqlResultPrivate
+{
+    Q_DECLARE_PUBLIC(QMdbToolsResult)
+
+public:
+    Q_DECLARE_SQLDRIVER_PRIVATE(QMdbToolsDriver)
+    QMdbToolsResultPrivate(QMdbToolsResult *q, const QMdbToolsDriver *db)
+        : QSqlResultPrivate(q, db)
+    {
+
+    }
+
+    inline void clearValues() {
+        fieldCache.fill(QVariant());
+        fieldCacheIdx = 0;
+    }
+
+    inline void clearData() {
+        curIdx = -1;
+        data.clear();
+    }
+
+    MdbSQL *access() const {
+        return drv_d_func() ? drv_d_func()->access : Q_NULLPTR;
+    }
+
+    MdbHandle *handle() const {
+        return access() ? access()->mdb : Q_NULLPTR;
+    }
+
+    bool isCurIdxValid() const {
+        return (curIdx >= 0 && curIdx < data.size());
+    }
+
+    QSqlRecord rInf;
+    QVector<QVariant> fieldCache;
+    int fieldCacheIdx = 0;
+
+    int curIdx = -1;
+    QList<QVariantList> data;
+};
+
+/************************************************************/
+
+QMdbToolsResult::QMdbToolsResult(const QMdbToolsDriver *db)
+    : QSqlResult(*new QMdbToolsResultPrivate(this, db))
+{
+
 }
 
 /************************************************************/
@@ -195,28 +211,59 @@ QMdbToolsResult::~QMdbToolsResult()
 
 QVariant QMdbToolsResult::data(int index)
 {
-    if (d.curIdx == -1 && d.curIdx >= d.data.size())
+    Q_D(QMdbToolsResult);
+    if (!d->isCurIdxValid())
         return QVariant();
-    auto rec = d.data.at(d.curIdx);
-    if (index >= 0 && index < rec.size()) {
-        return rec.at(index);
+    if (index >= d->rInf.count() || index < 0) {
+        qWarning() << "QODBCResult::data: column" << index << "out of range";
+        return QVariant();
     }
-    return QVariant();
+    if (index < d->fieldCacheIdx)
+        return d->fieldCache.at(index);
+
+    auto rec = d->data.at(d->curIdx);
+
+    for (int i = d->fieldCacheIdx; i <= index; ++i) {
+        const QSqlField info = d->rInf.field(i);
+        switch (info.type()) {
+        case QVariant::String:
+            d->fieldCache[i] = rec.at(i).toString();
+            break;
+        default:
+            d->fieldCache[i] = rec.at(i).toString();
+            break;
+        }
+    }
+    d->fieldCacheIdx = index + 1;
+    return d->fieldCache[index];
 }
 
 /************************************************************/
 
 bool QMdbToolsResult::isNull(int index)
 {
-    auto val = data(index);
-    return !val.isValid();
+    Q_D(QMdbToolsResult);
+    if (index < 0 || index >= d->fieldCache.size())
+        return true;
+    if (index <= d->fieldCacheIdx) {
+        // since there is no good way to find out whether the value is NULL
+        // without fetching the field we'll fetch it here.
+        // (data() also sets the NULL flag)
+        data(index);
+    }
+    return d->fieldCache.at(index).isNull();
 }
 
 /************************************************************/
 
 bool QMdbToolsResult::reset(const QString &query)
 {
-    auto sql = d.db->d_func()->access;
+    Q_D(QMdbToolsResult);
+    setActive(false);
+    setAt(QSql::BeforeFirstRow);
+    d->clearData();
+
+    auto sql = d->access();
     mdb_sql_run_query(sql, const_cast<char *>(qUtf8Printable(query)));
 
     if (mdb_sql_has_error(sql)) {
@@ -225,9 +272,26 @@ bool QMdbToolsResult::reset(const QString &query)
         return false;
     }
 
-    // TODO
+    d->rInf.clear();
+    for (uint i = 0; i < sql->num_columns; i++) {
+         MdbSQLColumn *col = static_cast<MdbSQLColumn *>(g_ptr_array_index(sql->columns, i));
+         QString colName  = QString::fromUtf8(col->name);
+         QSqlField fld(colName);
+         d->rInf.append(fld);
+    }
+
+    while(mdb_fetch_row(sql->cur_table)) {
+        QVariantList values;
+        for (uint j=0; j<sql->num_columns; j++) {
+            auto val = sql->bound_values[j];
+            values << QString::fromUtf8(static_cast<char *>(val));
+        }
+        d->data << values;
+    }
 
     mdb_sql_reset(sql);
+    setActive(true);
+
     return true;
 }
 
@@ -235,7 +299,17 @@ bool QMdbToolsResult::reset(const QString &query)
 
 bool QMdbToolsResult::fetch(int index)
 {
-    Q_UNUSED(index)
+    Q_D(QMdbToolsResult);
+    if (!driver()->isOpen())
+        return false;
+    if (index == at())
+        return true;
+    d->clearValues();
+    if (index > QSql::BeforeFirstRow && index < d->data.size()) {
+        d->curIdx = index;
+        setAt(index);
+        return true;
+    }
     return false;
 }
 
@@ -243,37 +317,43 @@ bool QMdbToolsResult::fetch(int index)
 
 bool QMdbToolsResult::fetchFirst()
 {
-    return false;
+    Q_D(QMdbToolsResult);
+    d->clearValues();
+    return fetch(0);
 }
 
 /************************************************************/
 
 bool QMdbToolsResult::fetchLast()
 {
-    return false;
+    Q_D(QMdbToolsResult);
+    d->clearValues();
+    return fetch(size() - 1);
 }
 
 /************************************************************/
 
 int QMdbToolsResult::size()
 {
-    return 0;
+    Q_D(QMdbToolsResult);
+    return d->data.size();
 }
 
 /************************************************************/
 
 int QMdbToolsResult::numRowsAffected()
 {
-    return 0;
+    return -1;
 }
 
 /************************************************************/
 
 QSqlRecord QMdbToolsResult::record() const
 {
+    Q_D(const QMdbToolsResult);
     if (!isActive() || !isSelect())
         return QSqlRecord();
-    return QSqlRecord();
+    return d->rInf;
 }
 
 /************************************************************/
@@ -295,9 +375,10 @@ QMdbToolsDriver::~QMdbToolsDriver()
 bool QMdbToolsDriver::hasFeature(DriverFeature f) const
 {
     switch (f) {
+    case Unicode:
+        return true;
     case BLOB:
     case Transactions:
-    case Unicode:
     case LastInsertId:
     case PreparedQueries:
     case PositionalPlaceholders:
@@ -407,44 +488,6 @@ QStringList QMdbToolsDriver::tables(QSql::TableType type) const
 }
 
 /************************************************************/
-/*
-static QSqlIndex qGetTableInfo(QSqlQuery &q, const QString &tableName, bool onlyPIndex = false)
-{
-    QString schema;
-    QString table(tableName);
-    int indexOfSeparator = tableName.indexOf(QLatin1Char('.'));
-    if (indexOfSeparator > -1) {
-        schema = tableName.left(indexOfSeparator).append(QLatin1Char('.'));
-        table = tableName.mid(indexOfSeparator + 1);
-    }
-    q.exec(QLatin1String("PRAGMA ") + schema + QLatin1String("table_info (") + _q_escapeIdentifier(table) + QLatin1Char(')'));
-
-    QSqlIndex ind;
-    while (q.next()) {
-        bool isPk = q.value(5).toInt();
-        if (onlyPIndex && !isPk)
-            continue;
-        QString typeName = q.value(2).toString().toLower();
-        QString defVal = q.value(4).toString();
-        if (!defVal.isEmpty() && defVal.at(0) == QLatin1Char('\'')) {
-            const int end = defVal.lastIndexOf(QLatin1Char('\''));
-            if (end > 0)
-                defVal = defVal.mid(1, end - 1);
-        }
-
-        QSqlField fld(q.value(1).toString(), qGetColumnType(typeName), tableName);
-        if (isPk && (typeName == QLatin1String("integer")))
-            // INTEGER PRIMARY KEY fields are auto-generated in sqlite
-            // INT PRIMARY KEY is not the same as INTEGER PRIMARY KEY!
-            fld.setAutoValue(true);
-        fld.setRequired(q.value(3).toInt() != 0);
-        fld.setDefaultValue(defVal);
-        ind.append(fld);
-    }
-    return ind;
-}
-*/
-/************************************************************/
 
 QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
 {
@@ -456,8 +499,6 @@ QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
     QString tableName = tbl;
     if (isIdentifierEscaped(tableName, QSqlDriver::TableName))
         tableName = stripDelimiters(tableName, QSqlDriver::TableName);
-
-
 
     auto table = mdb_read_table_by_name(mdb, const_cast<char *>(qUtf8Printable(tableName)), MDB_TABLE);
     if (!table) {
