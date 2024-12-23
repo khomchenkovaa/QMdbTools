@@ -23,13 +23,19 @@ int main(int argc, char *argv[])
     }
 
     const auto sql = QString("select * from %1").arg(tables.first());
-    QSqlQuery query(sql);
-    while (query.next()) {
-        QStringList values;
-        for (int i=0; i<query.size(); ++i) {
-            values << query.value(i).toString();
+    QSqlQuery query;
+    if (query.exec(sql)) {
+        qDebug() << query.size() << "records" << (query.isSelect() ? "select" : "???");
+        while (query.next()) {
+            QStringList values;
+            int colCount = query.record().count();
+            for (int i=0; i<colCount; ++i) {
+                values << query.value(i).toString();
+            }
+            qDebug() << values;
         }
-        qDebug() << values;
+    } else {
+        qDebug() << query.lastError();
     }
 
     return 0;

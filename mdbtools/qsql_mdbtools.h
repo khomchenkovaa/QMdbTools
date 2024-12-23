@@ -34,9 +34,9 @@ public:
     void close() override;
     QSqlResult *createResult() const override;
     QStringList tables(QSql::TableType) const override;
-
+    QVariant handle() const override;
     QSqlRecord record(const QString& tablename) const override;
-//    QSqlIndex primaryIndex(const QString &table) const override;
+    QSqlIndex primaryIndex(const QString &table) const override;
 };
 
 QT_END_NAMESPACE

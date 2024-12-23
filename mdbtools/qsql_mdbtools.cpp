@@ -5,6 +5,7 @@
 #include <QSqlResult>
 #include <QSqlRecord>
 #include <QSqlField>
+#include <QSqlIndex>
 #include <QtSql/private/qsqldriver_p.h>
 #include <QtSql/private/qsqlresult_p.h>
 
@@ -64,34 +65,6 @@ static QVariant::Type qGetColumnType(int mdbType)
 }
 
 /************************************************************/
-/*
-static QVariant::Type qGetColumnType(const QString &tpName)
-{
-    const QString typeName = tpName.toLower();
-
-    if (typeName == QLatin1String("bool"))
-        return QVariant::Bool;
-    if (typeName == QLatin1String("byte"))
-        return QVariant::Char;
-    if (typeName == QLatin1String("int"))
-        return QVariant::Int;
-    if (typeName == QLatin1String("longint")
-        || typeName == QLatin1String("repid"))
-        return QVariant::LongLong;
-    if (typeName == QLatin1String("money")
-        || typeName == QLatin1String("float")
-        || typeName == QLatin1String("double")
-        || typeName == QLatin1String("numeric"))
-        return QVariant::Double;
-    if (typeName == QLatin1String("datetime"))
-        return QVariant::DateTime;
-    if (typeName == QLatin1String("binary")
-        || typeName == QLatin1String("ole"))
-        return QVariant::ByteArray;
-    return QVariant::String;
-}
-*/
-/************************************************************/
 
 static QSqlError qMakeError(MdbSQL *access, const QString &descr,
                             QSqlError::ErrorType type,
@@ -120,7 +93,7 @@ public:
         mdb_sql_exit(access);
     }
 
-    MdbSQL *access = nullptr;
+    MdbSQL *access = Q_NULLPTR;
 };
 
 /************************************************************/
@@ -146,6 +119,7 @@ protected:
     int size() override;
     int numRowsAffected() override;
     QSqlRecord record() const override;
+    QVariant handle() const override;
 };
 
 /************************************************************/
@@ -162,13 +136,7 @@ public:
 
     }
 
-    inline void clearValues() {
-        fieldCache.fill(QVariant());
-        fieldCacheIdx = 0;
-    }
-
     inline void clearData() {
-        curIdx = -1;
         data.clear();
     }
 
@@ -180,15 +148,15 @@ public:
         return access() ? access()->mdb : Q_NULLPTR;
     }
 
-    bool isCurIdxValid() const {
-        return (curIdx >= 0 && curIdx < data.size());
+    bool isRowValid(int idx) const {
+        return (idx > QSql::BeforeFirstRow && idx < data.size());
+    }
+
+    bool isFieldIdxInRange(int idx) const {
+        return (idx >= 0 && idx < rInf.count());
     }
 
     QSqlRecord rInf;
-    QVector<QVariant> fieldCache;
-    int fieldCacheIdx = 0;
-
-    int curIdx = -1;
     QList<QVariantList> data;
 };
 
@@ -208,54 +176,49 @@ QMdbToolsResult::~QMdbToolsResult()
 }
 
 /************************************************************/
-
+/// Returns the data for field index in the current row as a QVariant.
+/// This function is only called if the result is in an active state and is positioned on a valid record and index is non-negative.
 QVariant QMdbToolsResult::data(int index)
 {
     Q_D(QMdbToolsResult);
-    if (!d->isCurIdxValid())
+    if (!d->isRowValid(at()))
         return QVariant();
-    if (index >= d->rInf.count() || index < 0) {
-        qWarning() << "QODBCResult::data: column" << index << "out of range";
+
+    if (!d->isFieldIdxInRange(index)) {
+        qWarning() << "QMdbToolsResult::data: column" << index << "out of range";
         return QVariant();
     }
-    if (index < d->fieldCacheIdx)
-        return d->fieldCache.at(index);
 
-    auto rec = d->data.at(d->curIdx);
+    auto rec = d->data.at(at());
 
-    for (int i = d->fieldCacheIdx; i <= index; ++i) {
-        const QSqlField info = d->rInf.field(i);
-        switch (info.type()) {
-        case QVariant::String:
-            d->fieldCache[i] = rec.at(i).toString();
-            break;
-        default:
-            d->fieldCache[i] = rec.at(i).toString();
-            break;
-        }
+    const QSqlField info = d->rInf.field(index);
+    switch (info.type()) {
+    case QVariant::String:
+        return rec.at(index).toString();
+        break;
+    default:
+        return rec.at(index).toString();
+        break;
     }
-    d->fieldCacheIdx = index + 1;
-    return d->fieldCache[index];
+    return QVariant();
 }
 
 /************************************************************/
-
+/// Returns true if the field at position index in the current row is null; otherwise returns false.
 bool QMdbToolsResult::isNull(int index)
 {
     Q_D(QMdbToolsResult);
-    if (index < 0 || index >= d->fieldCache.size())
+    if (!d->isRowValid(at()))
         return true;
-    if (index <= d->fieldCacheIdx) {
-        // since there is no good way to find out whether the value is NULL
-        // without fetching the field we'll fetch it here.
-        // (data() also sets the NULL flag)
-        data(index);
-    }
-    return d->fieldCache.at(index).isNull();
+    if (!d->isFieldIdxInRange(index))
+        return true;
+    auto rec = d->data.at(at());
+    return rec.at(index).isNull();
 }
 
 /************************************************************/
-
+/// Sets the result to use the SQL statement query for subsequent data retrieval.
+/// \return true if the query was successful and ready to be used, or false otherwise
 bool QMdbToolsResult::reset(const QString &query)
 {
     Q_D(QMdbToolsResult);
@@ -276,7 +239,10 @@ bool QMdbToolsResult::reset(const QString &query)
     for (uint i = 0; i < sql->num_columns; i++) {
          MdbSQLColumn *col = static_cast<MdbSQLColumn *>(g_ptr_array_index(sql->columns, i));
          QString colName  = QString::fromUtf8(col->name);
-         QSqlField fld(colName);
+         QString tableName  = QString::fromUtf8(sql->cur_table->name);
+         QSqlField fld(colName, QVariant::String, tableName);
+         fld.setSqlType(MDB_TEXT);
+         fld.setReadOnly(true);
          d->rInf.append(fld);
     }
 
@@ -291,12 +257,14 @@ bool QMdbToolsResult::reset(const QString &query)
 
     mdb_sql_reset(sql);
     setActive(true);
+    setSelect(true);
 
     return true;
 }
 
 /************************************************************/
-
+/// Positions the result to an arbitrary (zero-based) row index.
+/// \return true to indicate success, or false to signify failure.
 bool QMdbToolsResult::fetch(int index)
 {
     Q_D(QMdbToolsResult);
@@ -304,9 +272,7 @@ bool QMdbToolsResult::fetch(int index)
         return false;
     if (index == at())
         return true;
-    d->clearValues();
-    if (index > QSql::BeforeFirstRow && index < d->data.size()) {
-        d->curIdx = index;
+    if (d->isRowValid(index)) {
         setAt(index);
         return true;
     }
@@ -314,25 +280,23 @@ bool QMdbToolsResult::fetch(int index)
 }
 
 /************************************************************/
-
+/// Positions the result to the first record (row 0) in the result.
+/// \return true to indicate success, or false to signify failure.
 bool QMdbToolsResult::fetchFirst()
 {
-    Q_D(QMdbToolsResult);
-    d->clearValues();
     return fetch(0);
 }
 
 /************************************************************/
-
+/// Positions the result to the last record (last row) in the result.
+/// \return true to indicate success, or false to signify failure.
 bool QMdbToolsResult::fetchLast()
 {
-    Q_D(QMdbToolsResult);
-    d->clearValues();
     return fetch(size() - 1);
 }
 
 /************************************************************/
-
+/// Returns the size of the SELECT result, or -1 if it cannot be determined or if the query is not a SELECT statement.
 int QMdbToolsResult::size()
 {
     Q_D(QMdbToolsResult);
@@ -340,20 +304,27 @@ int QMdbToolsResult::size()
 }
 
 /************************************************************/
-
+/// Returns the number of rows affected by the last query executed, or -1 if it cannot be determined or if the query is a SELECT statement.
 int QMdbToolsResult::numRowsAffected()
 {
     return -1;
 }
 
 /************************************************************/
-
+/// Returns the current record if the query is active; otherwise returns an empty QSqlRecord.
 QSqlRecord QMdbToolsResult::record() const
 {
     Q_D(const QMdbToolsResult);
     if (!isActive() || !isSelect())
         return QSqlRecord();
     return d->rInf;
+}
+
+/************************************************************/
+/// Returns the low-level handle for this result set (MdbSQL*) wrapped in a QVariant
+QVariant QMdbToolsResult::handle() const
+{
+    return QVariant::fromValue(d_func()->access());
 }
 
 /************************************************************/
@@ -371,33 +342,38 @@ QMdbToolsDriver::~QMdbToolsDriver()
 }
 
 /************************************************************/
-
+/// Returns true if the driver supports feature; otherwise returns false.
 bool QMdbToolsDriver::hasFeature(DriverFeature f) const
 {
     switch (f) {
-    case Unicode:
+    case DriverFeature::Transactions:
+        return false;
+    case DriverFeature::QuerySize:
         return true;
-    case BLOB:
-    case Transactions:
-    case LastInsertId:
-    case PreparedQueries:
-    case PositionalPlaceholders:
-    case SimpleLocking:
-    case FinishQuery:
-    case LowPrecisionNumbers:
-    case EventNotifications:
-    case QuerySize:
-    case BatchOperations:
-    case MultipleResultSets:
-    case CancelQuery:
-    case NamedPlaceholders:
+    case DriverFeature::BLOB:
+        return false;
+    case DriverFeature::Unicode:
+        return true;
+    case DriverFeature::PreparedQueries:
+    case DriverFeature::NamedPlaceholders:
+    case DriverFeature::PositionalPlaceholders:
+    case DriverFeature::LastInsertId:
+    case DriverFeature::BatchOperations:
+    case DriverFeature::SimpleLocking:
+    case DriverFeature::LowPrecisionNumbers:
+    case DriverFeature::EventNotifications:
+    case DriverFeature::FinishQuery:
+    case DriverFeature::MultipleResultSets:
+    case DriverFeature::CancelQuery:
         return false;
     }
     return false;
 }
 
 /************************************************************/
-// MdbTools have no user name, passwords, hosts, ports or connect options. Just file names.
+/// \brief Open a database connection on database db (file name).
+/// MdbTools have no user name, password, host, port or connection options. Just file names.
+/// \return return true on success and false on failure.
 bool QMdbToolsDriver::open(const QString &db, const QString &, const QString &, const QString &, int, const QString &)
 {
     Q_D(QMdbToolsDriver);
@@ -431,7 +407,7 @@ bool QMdbToolsDriver::open(const QString &db, const QString &, const QString &, 
 }
 
 /************************************************************/
-
+/// Close the database connection.
 void QMdbToolsDriver::close()
 {
     Q_D(QMdbToolsDriver);
@@ -447,14 +423,14 @@ void QMdbToolsDriver::close()
 }
 
 /************************************************************/
-
+/// \return a QSqlResult object
 QSqlResult *QMdbToolsDriver::createResult() const
 {
     return new QMdbToolsResult(this);
 }
 
 /************************************************************/
-
+/// Returns a list of the names of the tables in the database.
 QStringList QMdbToolsDriver::tables(QSql::TableType type) const
 {
     auto mdb = d_func()->access->mdb;
@@ -488,7 +464,15 @@ QStringList QMdbToolsDriver::tables(QSql::TableType type) const
 }
 
 /************************************************************/
+/// Returns the low-level database handle (MdbHandle*) wrapped in a QVariant
+QVariant QMdbToolsDriver::handle() const
+{
+    return QVariant::fromValue(d_func()->access->mdb);
+}
 
+/************************************************************/
+/// Returns a QSqlRecord populated with the names of the fields in table tableName.
+/// If no such table exists, an empty record is returned.
 QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
 {
     auto mdb = d_func()->access->mdb;
@@ -528,7 +512,8 @@ QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
 }
 
 /************************************************************/
-/*
+/// Returns the primary index for table tableName.
+/// Returns an empty QSqlIndex if the table doesn't have a primary index.
 QSqlIndex QMdbToolsDriver::primaryIndex(const QString &tblname) const
 {
     if (!isOpen())
@@ -538,11 +523,10 @@ QSqlIndex QMdbToolsDriver::primaryIndex(const QString &tblname) const
     if (isIdentifierEscaped(table, QSqlDriver::TableName))
         table = stripDelimiters(table, QSqlDriver::TableName);
 
-    QSqlQuery q(createResult());
-    q.setForwardOnly(true);
-    return qGetTableInfo(q, table, true);
+    // TODO implement me
+    return QSqlIndex();
 }
-*/
+
 /************************************************************/
 
 QT_END_NAMESPACE
