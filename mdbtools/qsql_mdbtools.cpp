@@ -66,12 +66,11 @@ static QVariant::Type qGetColumnType(int mdbType)
 
 /************************************************************/
 
-static QSqlError qMakeError(MdbSQL *access, const QString &descr,
+static QSqlError qMakeError(const QString &dbError, const QString &descr,
                             QSqlError::ErrorType type,
                             int errorCode)
 {
-    return QSqlError(descr,
-                     QString::fromLocal8Bit(access->error_msg),
+    return QSqlError(descr, dbError,
                      type, QString::number(errorCode));
 }
 
@@ -91,6 +90,27 @@ public:
     ~QMdbToolsDriverPrivate()
     {
         mdb_sql_exit(access);
+    }
+
+    MdbHandle *handle() const {
+        return access->mdb;
+    }
+
+    MdbHandle *open(const QString &file) {
+         auto fileName = qPrintable(file);
+         return mdb_sql_open(access, const_cast<char*>(fileName));
+    }
+
+    void close() {
+        mdb_sql_close(access);
+    }
+
+    bool hasError() const {
+        return mdb_sql_has_error(access);
+    }
+
+    QString lastError() const {
+        return QString::fromLocal8Bit(access->error_msg);
     }
 
     MdbSQL *access = Q_NULLPTR;
@@ -230,7 +250,9 @@ bool QMdbToolsResult::reset(const QString &query)
     mdb_sql_run_query(sql, const_cast<char *>(qUtf8Printable(query)));
 
     if (mdb_sql_has_error(sql)) {
-        setLastError(qMakeError(sql, QString::fromUtf8("Cannot run query"), QSqlError::StatementError, -11));
+        setLastError(qMakeError(QString::fromLocal8Bit(sql->error_msg),
+                                QString::fromUtf8("Cannot run query"),
+                                QSqlError::StatementError, -11));
         mdb_sql_reset(sql);
         return false;
     }
@@ -380,12 +402,10 @@ bool QMdbToolsDriver::open(const QString &db, const QString &, const QString &, 
     if (isOpen())
         close();
 
-    auto fileName = qPrintable(db);
+    MdbHandle *handle = d->open(db);
 
-    MdbHandle *handle = mdb_sql_open(d->access, const_cast<char*>(fileName));
-
-    if (mdb_sql_has_error(d->access)) {
-        setLastError(qMakeError(d->access,
+    if (d->hasError()) {
+        setLastError(qMakeError(d->lastError(),
                                 tr("Error opening database"),
                      QSqlError::ConnectionError, -1));
         setOpenError(true);
@@ -394,7 +414,7 @@ bool QMdbToolsDriver::open(const QString &db, const QString &, const QString &, 
 
     /* read the catalog */
     if (!mdb_read_catalog (handle, MDB_ANY)) {
-        setLastError(qMakeError(d->access,
+        setLastError(qMakeError(d->lastError(),
                                 tr("File does not appear to be an Access database"),
                      QSqlError::ConnectionError, -2));
         setOpenError(true);
@@ -412,9 +432,9 @@ void QMdbToolsDriver::close()
 {
     Q_D(QMdbToolsDriver);
     if (isOpen()) {
-        mdb_sql_close(d->access);
-        if (mdb_sql_has_error(d->access)) {
-            setLastError(qMakeError(d->access, tr("Error closing database"),
+        d->close();
+        if (d->hasError()) {
+            setLastError(qMakeError(d->lastError(), tr("Error closing database"),
                          QSqlError::ConnectionError, -2));
         }
         setOpen(false);
@@ -433,7 +453,7 @@ QSqlResult *QMdbToolsDriver::createResult() const
 /// Returns a list of the names of the tables in the database.
 QStringList QMdbToolsDriver::tables(QSql::TableType type) const
 {
-    auto mdb = d_func()->access->mdb;
+    auto mdb = d_func()->handle();
 
     QStringList res;
     if (!isOpen())
@@ -467,7 +487,7 @@ QStringList QMdbToolsDriver::tables(QSql::TableType type) const
 /// Returns the low-level database handle (MdbHandle*) wrapped in a QVariant
 QVariant QMdbToolsDriver::handle() const
 {
-    return QVariant::fromValue(d_func()->access->mdb);
+    return QVariant::fromValue(d_func()->handle());
 }
 
 /************************************************************/
@@ -475,7 +495,7 @@ QVariant QMdbToolsDriver::handle() const
 /// If no such table exists, an empty record is returned.
 QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
 {
-    auto mdb = d_func()->access->mdb;
+    auto mdb = d_func()->handle();
 
     if (!isOpen())
         return QSqlRecord();
