@@ -24,4 +24,4 @@ else: unix:!android: target.path = /opt/$${TARGET}/bin
 
 DISTFILES += Books_be.mdb
 
-unix:!macx: LIBS += -lmdbsql -lmdb
+unix:!macx: LIBS += -lmdbsql -lmdb -lglib-2.0

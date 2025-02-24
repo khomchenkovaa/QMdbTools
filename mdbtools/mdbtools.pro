@@ -29,4 +29,4 @@ SOURCES += \
 
 OTHER_FILES += mdbtools.json
 
-unix:!macx: LIBS += -lmdbsql -lmdb
+unix:!macx: LIBS += -lmdbsql -lmdb -lglib-2.0

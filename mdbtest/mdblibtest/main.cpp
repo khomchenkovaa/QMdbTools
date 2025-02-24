@@ -1,6 +1,7 @@
 #include <QCoreApplication>
 
 #include <mdbsql.h>
+#include "glib/gstrfuncs.h"
 
 #include <QtSql>
 #include <QDebug>
@@ -74,18 +75,45 @@ bool runQuery(MdbSQL *sql, const QString &query) {
         return false;
     }
 
+    QList<MdbColumn*> cols;
+    for (uint i=0; i < sql->num_columns; ++i) {
+        MdbSQLColumn *sqlCol = static_cast<MdbSQLColumn *>(g_ptr_array_index(sql->columns, i));
+        MdbColumn *col = Q_NULLPTR;
+        auto table = sql->cur_table;
+        for (uint j=0; j < table->num_cols; ++j) {
+            MdbColumn *tblCol = static_cast<MdbColumn*>(g_ptr_array_index(table->columns, j));
+            if (!g_ascii_strcasecmp(sqlCol->name, tblCol->name)) {
+                col = tblCol;
+                break;
+            }
+        }
+        cols << col;
+    }
+
     QStringList columns;
-    for (uint j=0; j<sql->num_columns; j++) {
-        MdbSQLColumn *sqlcol = static_cast<MdbSQLColumn *>(g_ptr_array_index(sql->columns, j));
-        columns << sqlcol->name;
+    for (int i=0; i < cols.size(); ++i) {
+        MdbColumn *col = cols.at(i);
+        columns << (col ? QString::fromUtf8(col->name) : QString("unknown %1").arg(i));
     }
     qDebug() << "Query:" << query;
     qDebug() << columns;
+
     while(mdb_fetch_row(sql->cur_table)) {
-        QStringList values;
-        for (uint j=0; j<sql->num_columns; j++) {
-            auto val = sql->bound_values[j];
-            values << static_cast<char *>(val);
+        QVariantList values;
+        for (uint i=0; i < sql->num_columns; ++i) {
+            MdbColumn *col = cols.at(i);
+            int type = (col ? col->col_type : MDB_TEXT);
+            switch (type) {
+            case MDB_OLE: {
+                size_t size = 0;
+                auto val = mdb_ole_read_full(sql->mdb, col, &size);
+                values << QString::fromUtf8(static_cast<char *>(val));
+            }   break;
+            default: {
+                auto val = sql->bound_values[i];
+                values << QString::fromUtf8(static_cast<char *>(val));
+            }   break;
+            }
         }
         qDebug() << values;
     }
@@ -100,6 +128,7 @@ int main(int argc, char *argv[])
     MdbSQL *access = mdb_sql_init();
 
     const QString mdbFile = "Books_be.mdb";
+//    const QString mdbFile = "SpectraDB2.mdb";
     auto fileName = qPrintable(mdbFile);
 
     MdbHandle *handle = mdb_sql_open(access, const_cast<char*>(fileName));
@@ -129,7 +158,7 @@ int main(int argc, char *argv[])
     for (const auto &tbl : tables) {
         auto table = tableDef(handle, tbl);
         if (table) {
-            qDebug() << "table" << tbl << "has" << table->num_cols << "columns:";
+            qDebug()  << Qt::endl << "table" << tbl << "has" << table->num_cols << "columns:";
             for (uint i = 0; i < table->num_cols; i++) {
                  MdbColumn *col = static_cast<MdbColumn *>(g_ptr_array_index(table->columns, i));
                  qDebug() << col->name << QString("%1 (%2)").arg(typeName(col->col_type)).arg(col->col_size);
@@ -138,12 +167,14 @@ int main(int argc, char *argv[])
         }
     }
 
-    qDebug() << "sysTables" << Qt::endl << sysTables << Qt::endl;
-    qDebug() << "views"     << Qt::endl << views     << Qt::endl;
+    qDebug() << "sysTables" << Qt::endl << sysTables << Qt::endl << Qt::endl;
+    qDebug() << "views"     << Qt::endl << views     << Qt::endl << Qt::endl;
 
     runQuery(access, "select * from Authors");
-    runQuery(access, "select * from Hooks");
+//    runQuery(access, "select * from Hooks");
     runQuery(access, "select * from Books");
+//    runQuery(access, "select * from Spectra");
+//    runQuery(access, "select SavedProtocol, SpectrumID from Spectra");
 
     mdb_sql_close(access);
     if (mdb_sql_has_error(access)) {

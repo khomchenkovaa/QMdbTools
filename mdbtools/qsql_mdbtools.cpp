@@ -160,6 +160,11 @@ public:
         data.clear();
     }
 
+    inline void clearInfo() {
+        recInf.clear();
+        cols.clear();
+    }
+
     MdbSQL *access() const {
         return drv_d_func() ? drv_d_func()->access : Q_NULLPTR;
     }
@@ -173,10 +178,11 @@ public:
     }
 
     bool isFieldIdxInRange(int idx) const {
-        return (idx >= 0 && idx < rInf.count());
+        return (idx >= 0 && idx < recInf.count());
     }
 
-    QSqlRecord rInf;
+    QSqlRecord recInf;
+    QList<MdbColumn*> cols;
     QList<QVariantList> data;
 };
 
@@ -211,7 +217,7 @@ QVariant QMdbToolsResult::data(int index)
 
     auto rec = d->data.at(at());
 
-    const QSqlField info = d->rInf.field(index);
+    const QSqlField info = d->recInf.field(index);
     switch (info.type()) {
     case QVariant::String:
         return rec.at(index).toString();
@@ -257,22 +263,53 @@ bool QMdbToolsResult::reset(const QString &query)
         return false;
     }
 
-    d->rInf.clear();
+    d->clearInfo();
+    auto table = sql->cur_table;
     for (uint i = 0; i < sql->num_columns; i++) {
-         MdbSQLColumn *col = static_cast<MdbSQLColumn *>(g_ptr_array_index(sql->columns, i));
-         QString colName  = QString::fromUtf8(col->name);
-         QString tableName  = QString::fromUtf8(sql->cur_table->name);
-         QSqlField fld(colName, QVariant::String, tableName);
-         fld.setSqlType(MDB_TEXT);
-         fld.setReadOnly(true);
-         d->rInf.append(fld);
+         MdbSQLColumn *sqlCol = static_cast<MdbSQLColumn *>(g_ptr_array_index(sql->columns, i));
+         MdbColumn *col = Q_NULLPTR;
+         for (uint j=0; j < table->num_cols; ++j) {
+             MdbColumn *tblCol = static_cast<MdbColumn*>(g_ptr_array_index(table->columns, j));
+             if (!g_ascii_strcasecmp(sqlCol->name, tblCol->name)) {
+                 col = tblCol;
+                 break;
+             }
+         }
+         d->cols << col;
+         QString colName   = QString::fromUtf8(sqlCol->name);
+         QString tableName = QString::fromUtf8(table->name);
+         if (col) {
+             QSqlField fld(colName, qGetColumnType(col->col_type), tableName);
+             fld.setSqlType(col->col_type);
+             fld.setLength(col->col_size);
+             fld.setPrecision(col->col_prec);
+             fld.setReadOnly(col->is_fixed);
+             fld.setAutoValue(col->is_long_auto);
+             d->recInf.append(fld);
+         } else {
+             QSqlField fld(colName, QVariant::String, tableName);
+             fld.setSqlType(MDB_TEXT);
+             fld.setReadOnly(true);
+             d->recInf.append(fld);
+         }
     }
 
-    while(mdb_fetch_row(sql->cur_table)) {
+    while(mdb_fetch_row(table)) {
         QVariantList values;
-        for (uint j=0; j<sql->num_columns; j++) {
-            auto val = sql->bound_values[j];
-            values << QString::fromUtf8(static_cast<char *>(val));
+        for (uint i=0; i<sql->num_columns; ++i) {
+            auto fld = d->recInf.field(i);
+            switch (fld.typeID()) {
+//            case MDB_OLE: {
+//                size_t size = 0;
+//                auto col = d->cols.at(i);
+//                auto val = mdb_ole_read_full(sql->mdb, col, &size);
+//                values << QString::fromUtf8(static_cast<char *>(val));
+//            }   break;
+            default: {
+                auto val = sql->bound_values[i];
+                values << QString::fromUtf8(static_cast<char *>(val));
+            }   break;
+            }
         }
         d->data << values;
     }
@@ -339,7 +376,7 @@ QSqlRecord QMdbToolsResult::record() const
     Q_D(const QMdbToolsResult);
     if (!isActive() || !isSelect())
         return QSqlRecord();
-    return d->rInf;
+    return d->recInf;
 }
 
 /************************************************************/
