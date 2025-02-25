@@ -311,6 +311,9 @@ bool QMdbToolsResult::reset(const QString &query)
             auto col = d->cols.at(i);
             int type = (col ? col->col_type : MDB_TEXT);
             switch (type) {
+            case MDB_BOOL:
+                values << (col->cur_value_len ? false : true);
+                break;
             case MDB_OLE:
                 ole_len = mdb_get_int32(col->bind_ptr, 0);
                 if (ole_len) {
@@ -323,10 +326,14 @@ bool QMdbToolsResult::reset(const QString &query)
                     values << QVariant();
                 }
                 break;
-            default: {
-                auto val = sql->bound_values[i];
-                values << QString::fromUtf8(static_cast<char *>(val));
-            }   break;
+            default:
+                if (col && col->cur_value_len) {
+                    auto val = sql->bound_values[i];
+                    values << QString::fromUtf8(static_cast<char *>(val));
+                } else {
+                    values << QVariant();
+                }
+                break;
             }
         }
         d->data << values;
