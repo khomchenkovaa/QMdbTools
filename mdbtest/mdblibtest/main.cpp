@@ -75,10 +75,11 @@ bool runQuery(MdbSQL *sql, const QString &query) {
         return false;
     }
 
+
     QList<MdbColumn*> cols;
     for (uint i=0; i < sql->num_columns; ++i) {
         MdbSQLColumn *sqlCol = static_cast<MdbSQLColumn *>(g_ptr_array_index(sql->columns, i));
-        MdbColumn *col = Q_NULLPTR;
+        MdbColumn *col = Q_NULLPTR;                
         auto table = sql->cur_table;
         for (uint j=0; j < table->num_cols; ++j) {
             MdbColumn *tblCol = static_cast<MdbColumn*>(g_ptr_array_index(table->columns, j));
@@ -101,14 +102,22 @@ bool runQuery(MdbSQL *sql, const QString &query) {
     while(mdb_fetch_row(sql->cur_table)) {
         QVariantList values;
         for (uint i=0; i < sql->num_columns; ++i) {
+            guint32 ole_len = 0;
             MdbColumn *col = cols.at(i);
             int type = (col ? col->col_type : MDB_TEXT);
             switch (type) {
-            case MDB_OLE: {
-                size_t size = 0;
-                auto val = mdb_ole_read_full(sql->mdb, col, &size);
-                values << QString::fromUtf8(static_cast<char *>(val));
-            }   break;
+            case MDB_OLE:
+                ole_len = mdb_get_int32(col->bind_ptr, 0);
+                if (ole_len) {
+                    size_t size = 0;
+                    auto val = mdb_ole_read_full(sql->mdb, col, &size);
+                    auto rawData = QByteArray::fromRawData(static_cast<char *>(val), size);
+                    values << QString::fromUtf8(rawData);
+                    g_free(val);
+                } else {
+                    values << QVariant();
+                }
+                break;
             default: {
                 auto val = sql->bound_values[i];
                 values << QString::fromUtf8(static_cast<char *>(val));
@@ -127,8 +136,8 @@ int main(int argc, char *argv[])
     QCoreApplication a(argc, argv);
     MdbSQL *access = mdb_sql_init();
 
-    const QString mdbFile = "Books_be.mdb";
-//    const QString mdbFile = "SpectraDB2.mdb";
+//    const QString mdbFile = "Books_be.mdb";
+    const QString mdbFile = "SpectraDB.mdb";
     auto fileName = qPrintable(mdbFile);
 
     MdbHandle *handle = mdb_sql_open(access, const_cast<char*>(fileName));
@@ -170,11 +179,12 @@ int main(int argc, char *argv[])
     qDebug() << "sysTables" << Qt::endl << sysTables << Qt::endl << Qt::endl;
     qDebug() << "views"     << Qt::endl << views     << Qt::endl << Qt::endl;
 
-    runQuery(access, "select * from Authors");
+//    runQuery(access, "select * from Authors");
 //    runQuery(access, "select * from Hooks");
-    runQuery(access, "select * from Books");
-//    runQuery(access, "select * from Spectra");
+//    runQuery(access, "select * from Books");
+    runQuery(access, "select * from Spectra");
 //    runQuery(access, "select SavedProtocol, SpectrumID from Spectra");
+//    runQuery(access, "select Header, SpectrumID from Spectra");
 
     mdb_sql_close(access);
     if (mdb_sql_has_error(access)) {

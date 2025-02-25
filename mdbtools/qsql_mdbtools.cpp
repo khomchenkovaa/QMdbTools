@@ -76,6 +76,21 @@ static QSqlError qMakeError(const QString &dbError, const QString &descr,
 
 /************************************************************/
 
+static QSqlField qMakeField(MdbColumn *col)
+{
+    QString colName   = QString::fromUtf8(col->name);
+    QString tableName = QString::fromUtf8(col->table->name);
+    QSqlField fld(colName, qGetColumnType(col->col_type), tableName);
+    fld.setSqlType(col->col_type);
+    fld.setLength(col->col_size);
+    fld.setPrecision(col->col_prec);
+    fld.setReadOnly(col->is_fixed);
+    fld.setAutoValue(col->is_long_auto);
+    return fld;
+}
+
+/************************************************************/
+
 class QMdbToolsDriverPrivate : public QSqlDriverPrivate
 {
     Q_DECLARE_PUBLIC(QMdbToolsDriver)
@@ -276,17 +291,12 @@ bool QMdbToolsResult::reset(const QString &query)
              }
          }
          d->cols << col;
-         QString colName   = QString::fromUtf8(sqlCol->name);
-         QString tableName = QString::fromUtf8(table->name);
          if (col) {
-             QSqlField fld(colName, qGetColumnType(col->col_type), tableName);
-             fld.setSqlType(col->col_type);
-             fld.setLength(col->col_size);
-             fld.setPrecision(col->col_prec);
-             fld.setReadOnly(col->is_fixed);
-             fld.setAutoValue(col->is_long_auto);
+             auto fld = qMakeField(col);
              d->recInf.append(fld);
          } else {
+             QString colName   = QString::fromUtf8(sqlCol->name);
+             QString tableName = QString::fromUtf8(table->name);
              QSqlField fld(colName, QVariant::String, tableName);
              fld.setSqlType(MDB_TEXT);
              fld.setReadOnly(true);
@@ -297,14 +307,22 @@ bool QMdbToolsResult::reset(const QString &query)
     while(mdb_fetch_row(table)) {
         QVariantList values;
         for (uint i=0; i<sql->num_columns; ++i) {
-            auto fld = d->recInf.field(i);
-            switch (fld.typeID()) {
-//            case MDB_OLE: {
-//                size_t size = 0;
-//                auto col = d->cols.at(i);
-//                auto val = mdb_ole_read_full(sql->mdb, col, &size);
-//                values << QString::fromUtf8(static_cast<char *>(val));
-//            }   break;
+            guint32 ole_len = 0;
+            auto col = d->cols.at(i);
+            int type = (col ? col->col_type : MDB_TEXT);
+            switch (type) {
+            case MDB_OLE:
+                ole_len = mdb_get_int32(col->bind_ptr, 0);
+                if (ole_len) {
+                    size_t size = 0;
+                    auto val = mdb_ole_read_full(sql->mdb, col, &size);
+                    auto rawData = QByteArray::fromRawData(static_cast<char *>(val), size);
+                    values << QString::fromUtf8(rawData);
+                    g_free(val);
+                } else {
+                    values << QVariant();
+                }
+                break;
             default: {
                 auto val = sql->bound_values[i];
                 values << QString::fromUtf8(static_cast<char *>(val));
@@ -554,13 +572,7 @@ QSqlRecord QMdbToolsDriver::record(const QString &tbl) const
     QSqlRecord res;
     for (uint i = 0; i < table->num_cols; i++) {
          MdbColumn *col = static_cast<MdbColumn *>(g_ptr_array_index(table->columns, i));
-         QString colName  = QString::fromUtf8(col->name);
-         QSqlField fld(colName, qGetColumnType(col->col_type), tableName);
-         fld.setSqlType(col->col_type);
-         fld.setLength(col->col_size);
-         fld.setPrecision(col->col_prec);
-         fld.setReadOnly(col->is_fixed);
-         fld.setAutoValue(col->is_long_auto);
+         auto fld = qMakeField(col);
          res.append(fld);
     }
     mdb_free_tabledef(table);
