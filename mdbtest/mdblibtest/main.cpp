@@ -102,13 +102,70 @@ bool runQuery(MdbSQL *sql, const QString &query) {
     while(mdb_fetch_row(sql->cur_table)) {
         QVariantList values;
         for (uint i=0; i < sql->num_columns; ++i) {
-            guint32 ole_len = 0;
             MdbColumn *col = cols.at(i);
-            int type = (col ? col->col_type : MDB_TEXT);
-            switch (type) {
+            if (!col) {
+                values << QVariant();
+                continue;
+            }
+            switch (col->col_type) {
+            case MDB_BOOL:
+                // bool cannot be null
+                values << (col->cur_value_len ? false : true);
+                break;
+            case MDB_BYTE:
+                if (col->cur_value_len) {
+                    values << mdb_get_byte(sql->mdb->pg_buf, col->cur_value_start);
+                } else {
+                    values << QVariant();
+                }
+                break;
+            case MDB_INT:
+                if (col->cur_value_len) {
+                    values << mdb_get_int16(sql->mdb->pg_buf, col->cur_value_start);
+                } else {
+                    values << QVariant();
+                }
+                break;
+            case MDB_LONGINT:
+                if (col->cur_value_len) {
+                    qint32 val = mdb_get_int32(sql->mdb->pg_buf, col->cur_value_start);
+                    values << val;
+                } else {
+                    values << QVariant();
+                }
+                break;
+            case MDB_FLOAT:
+                if (col->cur_value_len) {
+                    values << mdb_get_single(sql->mdb->pg_buf, col->cur_value_start);
+                } else {
+                    values << QVariant();
+                }
+                break;
+            case MDB_DOUBLE:
+                if (col->cur_value_len) {
+                    values << mdb_get_double(sql->mdb->pg_buf, col->cur_value_start);
+                } else {
+                    values << QVariant();
+                }
+                break;
+            case MDB_DATETIME:
+                if (col->cur_value_len) {
+                    struct tm tmp_t = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+                    mdb_date_to_tm(mdb_get_double(sql->mdb->pg_buf, col->cur_value_start), &tmp_t);
+                    const char *format = mdb_col_get_prop(col, "Format");
+                    if (format && !strcmp(format, "Short Date")) {
+                        values << QDate(tmp_t.tm_year + 1900, tmp_t.tm_mon + 1, tmp_t.tm_mday);
+                    } else {
+                        QDate date(tmp_t.tm_year + 1900, tmp_t.tm_mon + 1, tmp_t.tm_mday);
+                        QTime time(tmp_t.tm_hour, tmp_t.tm_min, tmp_t.tm_sec);
+                        values << QDateTime(date, time);
+                    }
+                } else {
+                    values << QVariant();
+                }
+                break;
             case MDB_OLE:
-                ole_len = mdb_get_int32(col->bind_ptr, 0);
-                if (ole_len) {
+                if (col->cur_value_len && mdb_get_int32(col->bind_ptr, 0)) {
                     size_t size = 0;
                     auto val = mdb_ole_read_full(sql->mdb, col, &size);
                     auto rawData = QByteArray::fromRawData(static_cast<char *>(val), size);
@@ -118,10 +175,13 @@ bool runQuery(MdbSQL *sql, const QString &query) {
                     values << QVariant();
                 }
                 break;
-            default: {
-                auto val = sql->bound_values[i];
-                values << QString::fromUtf8(static_cast<char *>(val));
-            }   break;
+            default:
+                if (col->cur_value_len) {
+                    values << QString::fromUtf8(static_cast<char *>(sql->bound_values[i]));
+                } else {
+                    values << QVariant();
+                }
+                break;
             }
         }
         qDebug() << values;
