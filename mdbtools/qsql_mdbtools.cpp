@@ -93,6 +93,62 @@ static QSqlField qMakeField(MdbColumn *col)
 
 /************************************************************/
 
+static QVariant qGetValue(MdbSQL *sql, MdbColumn *col, uint colNum) {
+    if (!col) {
+        return QString::fromUtf8(static_cast<char *>(sql->bound_values[colNum]));;
+    }
+    // bool cannot be null
+    if (col->col_type == MDB_BOOL) {
+        return (col->cur_value_len ? false : true);
+    }
+    // null value
+    if (col->cur_value_len == 0) {
+        return QVariant();
+    }
+    // not null value
+    switch (col->col_type) {
+    case MDB_BYTE:
+        return mdb_get_byte(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_INT:
+        return mdb_get_int16(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_LONGINT:
+        return (qint32)mdb_get_int32(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_FLOAT:
+        return mdb_get_single(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_DOUBLE:
+        return mdb_get_double(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_DATETIME:
+        {
+            struct tm tmp_t = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+            mdb_date_to_tm(mdb_get_double(sql->mdb->pg_buf, col->cur_value_start), &tmp_t);
+            const char *format = mdb_col_get_prop(col, "Format");
+            if (format && !strcmp(format, "Short Date")) {
+                return QDate(tmp_t.tm_year + 1900, tmp_t.tm_mon + 1, tmp_t.tm_mday);
+            } else {
+                QDate date(tmp_t.tm_year + 1900, tmp_t.tm_mon + 1, tmp_t.tm_mday);
+                QTime time(tmp_t.tm_hour, tmp_t.tm_min, tmp_t.tm_sec);
+                return QDateTime(date, time);
+            }
+        }
+        break;
+    case MDB_OLE:
+        if (mdb_get_int32(col->bind_ptr, 0)) {
+            size_t size = 0;
+            auto val = mdb_ole_read_full(sql->mdb, col, &size);
+            auto rawData = QByteArray::fromRawData(static_cast<char *>(val), size);
+            auto result = QString::fromUtf8(rawData);
+            g_free(val);
+            return result;
+        }
+        break;
+    default:
+        return QString::fromUtf8(static_cast<char *>(sql->bound_values[colNum]));
+    }
+    return QVariant();
+}
+
+/************************************************************/
+
 class QMdbToolsDriverPrivate : public QSqlDriverPrivate
 {
     Q_DECLARE_PUBLIC(QMdbToolsDriver)
@@ -310,86 +366,7 @@ bool QMdbToolsResult::reset(const QString &query)
         QVariantList values;
         for (uint i=0; i<sql->num_columns; ++i) {
             MdbColumn *col = d->cols.at(i);
-            if (!col) {
-                values << QString::fromUtf8(static_cast<char *>(sql->bound_values[i]));
-                continue;
-            }
-            switch (col->col_type) {
-            case MDB_BOOL:
-                // bool cannot be null
-                values << (col->cur_value_len ? false : true);
-                break;
-            case MDB_BYTE:
-                if (col->cur_value_len) {
-                    values << mdb_get_byte(sql->mdb->pg_buf, col->cur_value_start);
-                } else {
-                    values << QVariant();
-                }
-                break;
-            case MDB_INT:
-                if (col->cur_value_len) {
-                    values << mdb_get_int16(sql->mdb->pg_buf, col->cur_value_start);
-                } else {
-                    values << QVariant();
-                }
-                break;
-            case MDB_LONGINT:
-                if (col->cur_value_len) {
-                    qint32 val = mdb_get_int32(sql->mdb->pg_buf, col->cur_value_start);
-                    values << val;
-                } else {
-                    values << QVariant();
-                }
-                break;
-            case MDB_FLOAT:
-                if (col->cur_value_len) {
-                    values << mdb_get_single(sql->mdb->pg_buf, col->cur_value_start);
-                } else {
-                    values << QVariant();
-                }
-                break;
-            case MDB_DOUBLE:
-                if (col->cur_value_len) {
-                    values << mdb_get_double(sql->mdb->pg_buf, col->cur_value_start);
-                } else {
-                    values << QVariant();
-                }
-                break;
-            case MDB_DATETIME:
-                if (col->cur_value_len) {
-                    struct tm tmp_t = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-                    mdb_date_to_tm(mdb_get_double(sql->mdb->pg_buf, col->cur_value_start), &tmp_t);
-                    const char *format = mdb_col_get_prop(col, "Format");
-                    if (format && !strcmp(format, "Short Date")) {
-                        values << QDate(tmp_t.tm_year + 1900, tmp_t.tm_mon + 1, tmp_t.tm_mday);
-                    } else {
-                        QDate date(tmp_t.tm_year + 1900, tmp_t.tm_mon + 1, tmp_t.tm_mday);
-                        QTime time(tmp_t.tm_hour, tmp_t.tm_min, tmp_t.tm_sec);
-                        values << QDateTime(date, time);
-                    }
-                } else {
-                    values << QVariant();
-                }
-                break;
-            case MDB_OLE:
-                if (col->cur_value_len && mdb_get_int32(col->bind_ptr, 0)) {
-                    size_t size = 0;
-                    auto val = mdb_ole_read_full(sql->mdb, col, &size);
-                    auto rawData = QByteArray::fromRawData(static_cast<char *>(val), size);
-                    values << QString::fromUtf8(rawData);
-                    g_free(val);
-                } else {
-                    values << QVariant();
-                }
-                break;
-            default:
-                if (col->cur_value_len) {
-                    values << QString::fromUtf8(static_cast<char *>(sql->bound_values[i]));
-                } else {
-                    values << QVariant();
-                }
-                break;
-            }
+            values << qGetValue(sql, col, i);
         }
         d->data << values;
     }
