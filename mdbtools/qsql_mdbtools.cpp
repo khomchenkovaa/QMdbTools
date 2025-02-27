@@ -1,6 +1,8 @@
 #include "qsql_mdbtools.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
+
 #include <QSqlError>
 #include <QSqlResult>
 #include <QSqlRecord>
@@ -91,6 +93,62 @@ static QSqlField qMakeField(MdbColumn *col)
 
 /************************************************************/
 
+static QVariant qGetValue(MdbSQL *sql, MdbColumn *col, uint colNum) {
+    if (!col) {
+        return QString::fromUtf8(static_cast<char *>(sql->bound_values[colNum]));;
+    }
+    // bool cannot be null
+    if (col->col_type == MDB_BOOL) {
+        return (col->cur_value_len ? false : true);
+    }
+    // null value
+    if (col->cur_value_len == 0) {
+        return QVariant();
+    }
+    // not null value
+    switch (col->col_type) {
+    case MDB_BYTE:
+        return mdb_get_byte(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_INT:
+        return mdb_get_int16(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_LONGINT:
+        return (qint32)mdb_get_int32(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_FLOAT:
+        return mdb_get_single(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_DOUBLE:
+        return mdb_get_double(sql->mdb->pg_buf, col->cur_value_start);
+    case MDB_DATETIME:
+        {
+            struct tm tmp_t = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+            mdb_date_to_tm(mdb_get_double(sql->mdb->pg_buf, col->cur_value_start), &tmp_t);
+            const char *format = mdb_col_get_prop(col, "Format");
+            if (format && !strcmp(format, "Short Date")) {
+                return QDate(tmp_t.tm_year + 1900, tmp_t.tm_mon + 1, tmp_t.tm_mday);
+            } else {
+                QDate date(tmp_t.tm_year + 1900, tmp_t.tm_mon + 1, tmp_t.tm_mday);
+                QTime time(tmp_t.tm_hour, tmp_t.tm_min, tmp_t.tm_sec);
+                return QDateTime(date, time);
+            }
+        }
+        break;
+    case MDB_OLE:
+        if (mdb_get_int32(col->bind_ptr, 0)) {
+            size_t size = 0;
+            auto val = mdb_ole_read_full(sql->mdb, col, &size);
+            auto rawData = QByteArray::fromRawData(static_cast<char *>(val), size);
+            auto result = QString::fromUtf8(rawData);
+            g_free(val);
+            return result;
+        }
+        break;
+    default:
+        return QString::fromUtf8(static_cast<char *>(sql->bound_values[colNum]));
+    }
+    return QVariant();
+}
+
+/************************************************************/
+
 class QMdbToolsDriverPrivate : public QSqlDriverPrivate
 {
     Q_DECLARE_PUBLIC(QMdbToolsDriver)
@@ -138,7 +196,7 @@ class QMdbToolsResultPrivate;
 class QMdbToolsResult : public QSqlResult
 {
     Q_DECLARE_PRIVATE(QMdbToolsResult)
-    friend class QSQLiteDriver;
+    friend class QMdbToolsDriver;
 
 public:
     explicit QMdbToolsResult(const QMdbToolsDriver* db);
@@ -307,34 +365,8 @@ bool QMdbToolsResult::reset(const QString &query)
     while(mdb_fetch_row(table)) {
         QVariantList values;
         for (uint i=0; i<sql->num_columns; ++i) {
-            guint32 ole_len = 0;
-            auto col = d->cols.at(i);
-            int type = (col ? col->col_type : MDB_TEXT);
-            switch (type) {
-            case MDB_BOOL:
-                values << (col->cur_value_len ? false : true);
-                break;
-            case MDB_OLE:
-                ole_len = mdb_get_int32(col->bind_ptr, 0);
-                if (ole_len) {
-                    size_t size = 0;
-                    auto val = mdb_ole_read_full(sql->mdb, col, &size);
-                    auto rawData = QByteArray::fromRawData(static_cast<char *>(val), size);
-                    values << QString::fromUtf8(rawData);
-                    g_free(val);
-                } else {
-                    values << QVariant();
-                }
-                break;
-            default:
-                if (col && col->cur_value_len) {
-                    auto val = sql->bound_values[i];
-                    values << QString::fromUtf8(static_cast<char *>(val));
-                } else {
-                    values << QVariant();
-                }
-                break;
-            }
+            MdbColumn *col = d->cols.at(i);
+            values << qGetValue(sql, col, i);
         }
         d->data << values;
     }
