@@ -384,6 +384,8 @@ bool QMdbToolsResult::reset(const QString &query)
 bool QMdbToolsResult::fetch(int index)
 {
     Q_D(QMdbToolsResult);
+    if (!driver())
+        return false;
     if (!driver()->isOpen())
         return false;
     if (index == at())
